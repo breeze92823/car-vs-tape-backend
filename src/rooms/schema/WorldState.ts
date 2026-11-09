@@ -15,7 +15,7 @@ export const PlayerState = schema(
     speed: t.float32().default(0), // m/s along the nose, signed (the wheels' speed: a treadmill reports its belt speed)
     steer: t.float32().default(0), // -1..1 steering input (front wheels + the driver's hands)
     thr: t.float32().default(0), // -1..1 throttle (exhaust, brake lights)
-    flags: t.uint8().default(0), // pose flag bits: braking 1, drifting 2, handbrake 4, treadmill 8, boosted 16, stunned 32
+    flags: t.uint8().default(0), // pose flag bits: braking 1, drifting 2, handbrake 4, treadmill 8, boosted 16, stunned 32, rocket (Shift boost) 64, flying 128
     emote: t.uint8().default(0), // the driver's last gesture: 1 cheer, 2 wave, 3 honk (counted by emoteN)
     emoteN: t.uint16().default(0), // bumps with every emote so the same gesture can repeat
     car: t.string().default(""), // equipped car id (client CARS), "" = default
