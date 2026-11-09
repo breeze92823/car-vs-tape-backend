@@ -16,7 +16,7 @@ export function playRewardMs(): number {
   return envMs("PLAY_REWARD_MS", 60 * 60 * 1000);
 }
 export function carGiftMs(gifts: number): number {
-  return Math.round(envMs("CAR_GIFT_MS", 30 * 60 * 1000) * Math.min(4, 1 + 0.5 * Math.max(0, gifts)));
+  return Math.round(envMs("CAR_GIFT_MS", 120 * 60 * 1000) * Math.min(4, 1 + 0.5 * Math.max(0, gifts)));
 }
 
 export class PlayClock {
