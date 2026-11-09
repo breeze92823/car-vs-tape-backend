@@ -1,12 +1,12 @@
 import { Room, Client, CloseCode } from "colyseus";
 import { WorldState, PlayerState } from "./schema/WorldState.js";
-import { GUEST_ID_PREFIX, LEADERBOARD_EVERY_MS, NAME_MAX, PFP_MAX_LEN, PLAY_SAVE_EVERY_MS, RECONNECT_SECONDS, ROOM_MAX_CLIENTS } from "../constants.js";
+import { GUEST_ID_PREFIX, ID_PATTERN, LEADERBOARD_EVERY_MS, NAME_MAX, PFP_MAX_LEN, PLAY_SAVE_EVERY_MS, RECONNECT_SECONDS, ROOM_MAX_CLIENTS } from "../constants.js";
 import { getPlayers, type PlayerDoc } from "../db.js";
-import { sanitizeProgress } from "../sanitize.js";
-import { applyLoadout, applyPose } from "../presence.js";
+import { sanitizeIds, sanitizeProgress } from "../sanitize.js";
+import { applyAvatar, applyEmote, applyLoadout, applyPose } from "../presence.js";
 import { queueReport, verifyAdReward } from "../bloxity.js";
 import { ranksOf, topBoards } from "../leaderboard.js";
-import { PlayClock, playRewardMs } from "../playtime.js";
+import { PlayRewards, type PlayDoc } from "../playtime.js";
 
 function sanitizeName(raw: unknown): string {
   return typeof raw === "string" ? raw.slice(0, NAME_MAX) : "";
@@ -36,10 +36,10 @@ export class WorldRoom extends Room<{ state: WorldState }> {
   // sessionIds whose current identity's save has been read: only these may write. A save sent
   // before the load answered would overwrite the stored progress with a fresh player's defaults.
   private loaded = new Set<string>();
-  // Free Boost chest (playtime.ts): signed-in sessions' play clocks and chest counts. Guests have none.
-  private play = new Map<string, PlayClock>();
-  private claims = new Map<string, number>();
-  // sessionIds whose tab is hidden (`playActive` false): their clock is stopped.
+  // Playtime rewards (playtime.ts: Free Boost chest + free car): signed-in sessions' clocks, created
+  // once their save has loaded. Guests have none.
+  private play = new Map<string, PlayRewards>();
+  // sessionIds whose tab is hidden (`playActive` false): their clocks are stopped.
   private hidden = new Set<string>();
 
   messages = {
@@ -61,7 +61,7 @@ export class WorldRoom extends Room<{ state: WorldState }> {
           { _id: userId },
           {
             // Display name comes from this connection's own PlayerState, not `msg`.
-            // playMs is the server's own count, never the client's.
+            // The play clocks are the server's own count, never the client's.
             $set: { ...rest, ...this.playPatch(client.sessionId), username: p.username || "Player", updatedAt: new Date() },
             ...(Object.keys(max).length > 0 && { $max: max }),
             $setOnInsert: { version: 1 },
@@ -79,7 +79,7 @@ export class WorldRoom extends Room<{ state: WorldState }> {
     adReward: async (client: Client, msg: { rewardToken?: unknown }) => {
       client.send("adRewardResult", { ok: await verifyAdReward(msg?.rewardToken) });
     },
-    // The tab was hidden / shown: the chest's play clock only runs while the game is on screen.
+    // The tab was hidden / shown: the play clocks only run while the game is on screen.
     playActive: (client: Client, msg: { active?: unknown }) => {
       const active = msg?.active !== false;
       if (active) this.hidden.delete(client.sessionId);
@@ -93,20 +93,32 @@ export class WorldRoom extends Room<{ state: WorldState }> {
     claimChest: async (client: Client) => {
       const sid = client.sessionId;
       const userId = this.userIds.get(sid);
-      const clock = this.play.get(sid);
+      const r = this.play.get(sid);
       if (!userId) return client.send("chestResult", { ok: false, reason: "signin", ...this.playStatus(sid) });
-      if (!clock || !this.loaded.has(sid)) return client.send("chestResult", { ok: false, reason: "loading", ...this.playStatus(sid) });
-      if (!clock.take()) return client.send("chestResult", { ok: false, reason: "early", ...this.playStatus(sid) });
-      const claims = (this.claims.get(sid) ?? 0) + 1;
-      this.claims.set(sid, claims);
+      if (!r || !this.loaded.has(sid)) return client.send("chestResult", { ok: false, reason: "loading", ...this.playStatus(sid) });
+      if (!r.takeChest()) return client.send("chestResult", { ok: false, reason: "early", ...this.playStatus(sid) });
       client.send("chestResult", { ok: true, ...this.playStatus(sid) });
-      const players = getPlayers();
-      if (!players) return;
-      try {
-        await players.updateOne({ _id: userId }, { $set: { playMs: 0, chestClaims: claims }, $setOnInsert: { version: 1 } }, { upsert: true });
-      } catch (err) {
-        console.warn("[WorldRoom] claimChest save failed", err);
-      }
+      await this.writeRewards(userId, { playMs: 0, chestClaims: r.claims }, "claimChest");
+    },
+    // The car drove onto the Free Car podium: { car } = the client's pick (the next car above its
+    // best). Same gate as the chest, with the free-car clock (playtime.ts carGiftMs: 30 min and up);
+    // each car id is gifted once. Answers `carResult` { ok, carId, reason?: "signin" | "loading" |
+    // "early" | "owned" | "bad", ...playtime status }. On ok the car is also added to the saved
+    // `owned` (and `giftedCars`, merged back into `owned` on every load), so a gift is never lost
+    // even if the client's next save never arrives; the client equips it.
+    claimCar: async (client: Client, msg: { car?: unknown }) => {
+      const sid = client.sessionId;
+      const userId = this.userIds.get(sid);
+      const r = this.play.get(sid);
+      const car = typeof msg?.car === "string" && ID_PATTERN.test(msg.car) ? msg.car : "";
+      const answer = (ok: boolean, reason?: string) => client.send("carResult", { ...this.playStatus(sid), ok, carId: car, ...(reason && { reason }) });
+      if (!car) return answer(false, "bad");
+      if (!userId) return answer(false, "signin");
+      if (!r || !this.loaded.has(sid)) return answer(false, "loading");
+      const took = r.takeCar(car);
+      if (took !== "ok") return answer(false, took);
+      answer(true);
+      await this.writeRewards(userId, { carPlayMs: 0, carGifts: r.gifts, giftedCars: [...r.gifted] }, "claimCar", car);
     },
     // Presence (presence.ts): the sender's pose ~10x/s and its car, relayed through the roster.
     pose: (client: Client, msg: unknown) => {
@@ -116,6 +128,15 @@ export class WorldRoom extends Room<{ state: WorldState }> {
     loadout: (client: Client, msg: unknown) => {
       const p = this.state.players.get(client.sessionId);
       if (p) applyLoadout(p, msg);
+    },
+    // The driver's gesture (cheer / wave / honk) and Bloxity avatar look, relayed for the others to draw.
+    emote: (client: Client, msg: unknown) => {
+      const p = this.state.players.get(client.sessionId);
+      if (p) applyEmote(p, msg);
+    },
+    avatar: (client: Client, msg: unknown) => {
+      const p = this.state.players.get(client.sessionId);
+      if (p) applyAvatar(p, msg);
     },
     // Re-states identity after a login/logout that happens AFTER join (a guest who signs in
     // mid-session). The server answers with progress/noProgress for the new identity.
@@ -141,16 +162,28 @@ export class WorldRoom extends Room<{ state: WorldState }> {
     }, PLAY_SAVE_EVERY_MS);
   }
 
-  // `playtime` / `chestResult` payload: { signedIn, playMs, needMs, claims, active }.
+  // `playtime` / `chestResult` / `carResult` payload: { signedIn, active, playMs, needMs, claims (chest),
+  // car: { playMs, needMs, gifts, gifted[] } } -- zeros for a guest or before the save has loaded.
   private playStatus(sessionId: string) {
-    const clock = this.play.get(sessionId);
+    const r = this.play.get(sessionId);
     return {
       signedIn: this.userIds.has(sessionId),
-      playMs: clock?.ms() ?? 0,
-      needMs: playRewardMs(),
-      claims: this.claims.get(sessionId) ?? 0,
-      active: clock?.active ?? false,
+      ...(r?.status() ?? { playMs: 0, needMs: 0, claims: 0, active: false, car: { playMs: 0, needMs: 0, gifts: 0, gifted: [] } }),
     };
+  }
+  // A claimed reward's counters (and a gifted car, into `owned`).
+  private async writeRewards(userId: string, set: PlayDoc, what: string, car?: string) {
+    const players = getPlayers();
+    if (!players) return;
+    try {
+      await players.updateOne(
+        { _id: userId },
+        { $set: set, ...(car && { $addToSet: { owned: car } }), $setOnInsert: { version: 1 } },
+        { upsert: true },
+      );
+    } catch (err) {
+      console.warn(`[WorldRoom] ${what} save failed`, err);
+    }
   }
   private sendPlaytime(client: Client) {
     try {
@@ -159,9 +192,9 @@ export class WorldRoom extends Room<{ state: WorldState }> {
       // Gone meanwhile.
     }
   }
-  private playPatch(sessionId: string): { playMs?: number } {
-    const clock = this.play.get(sessionId);
-    return clock && this.loaded.has(sessionId) ? { playMs: clock.ms() } : {};
+  private playPatch(sessionId: string): { playMs?: number; carPlayMs?: number } {
+    const r = this.play.get(sessionId);
+    return r && this.loaded.has(sessionId) ? r.clocks() : {};
   }
   // Reads the clock synchronously (before any await), so callers may drop the session right after.
   private async savePlay(sessionId: string, userId = this.userIds.get(sessionId)) {
@@ -187,13 +220,14 @@ export class WorldRoom extends Room<{ state: WorldState }> {
     }
   }
 
-  onJoin(client: Client, options?: { username?: string; userId?: string; pfp?: string; pose?: unknown; loadout?: unknown }) {
+  onJoin(client: Client, options?: { username?: string; userId?: string; pfp?: string; pose?: unknown; loadout?: unknown; avatar?: unknown }) {
     const p = new PlayerState();
     p.username = sanitizeName(options?.username);
     p.pfp = sanitizePfp(options?.pfp);
     // Presence from the join options, so the others draw the newcomer right away.
     applyPose(p, options?.pose);
     applyLoadout(p, options?.loadout);
+    applyAvatar(p, options?.avatar);
     this.state.players.set(client.sessionId, p);
     this.setUserId(client, p, typeof options?.userId === "string" ? options.userId : "");
   }
@@ -236,7 +270,6 @@ export class WorldRoom extends Room<{ state: WorldState }> {
     this.identified.delete(sessionId);
     this.loaded.delete(sessionId);
     this.play.delete(sessionId);
-    this.claims.delete(sessionId);
     this.hidden.delete(sessionId);
   }
 
@@ -251,14 +284,14 @@ export class WorldRoom extends Room<{ state: WorldState }> {
     // No change (e.g. a username-only identify) -- but the very first call must still answer.
     if (userId === prev && this.identified.has(client.sessionId)) return;
     this.identified.add(client.sessionId);
-    // The old identity's chest clock is saved and stopped; the new one's is read with its save.
+    // The old identity's play clocks are saved and stopped; the new one's are read with its save.
     if (prev) void this.savePlay(client.sessionId, prev);
     this.loaded.delete(client.sessionId); // no writes until the new identity's save is read
     p.signedIn = !!userId;
+    p.uid = userId;
     this.play.delete(client.sessionId);
-    this.claims.delete(client.sessionId);
-    // An evicted session's clock carries over (its own save may land after this load reads).
-    let carry = { playMs: 0, claims: 0 };
+    // An evicted session's clocks carry over (its own save may land after this load reads).
+    let carry: PlayDoc | undefined;
 
     if (userId) {
       // Evict any OTHER live session already claiming this account, so one account never has
@@ -266,7 +299,7 @@ export class WorldRoom extends Room<{ state: WorldState }> {
       // allowReconnection in onLeave).
       for (const [sid, uid] of this.userIds) {
         if (sid === client.sessionId || uid !== userId) continue;
-        carry = { playMs: Math.max(carry.playMs, this.play.get(sid)?.ms() ?? 0), claims: Math.max(carry.claims, this.claims.get(sid) ?? 0) };
+        carry = this.play.get(sid)?.snapshot() ?? carry;
         void this.savePlay(sid);
         this.forgetSession(sid);
         const stale = this.clients.find((c) => c.sessionId === sid);
@@ -291,7 +324,7 @@ export class WorldRoom extends Room<{ state: WorldState }> {
   // Sends the saved doc to just this client so it can hydrate its state ("progress"), or
   // "noProgress" when there is nothing to load (new account, guest, or Mongo unset). A failed read
   // sends "serverError" and keeps saving off, so a save that could not be read is never overwritten.
-  private async loadProgress(client: Client, userId: string, p: PlayerState, carry = { playMs: 0, claims: 0 }) {
+  private async loadProgress(client: Client, userId: string, p: PlayerState, carry?: PlayDoc) {
     const players = getPlayers();
     let doc: PlayerDoc | null = null;
     if (userId && players) {
@@ -309,15 +342,17 @@ export class WorldRoom extends Room<{ state: WorldState }> {
     this.loaded.add(client.sessionId);
     const now = Date.now();
     if (!doc) client.send("noProgress", { serverTime: now });
-    else client.send("progress", { ...(sanitizeProgress(doc) ?? {}), serverTime: now });
-
-    // Signed-in accounts (also without a database: then the clock lives for this session) start
-    // their chest clock from the saved count.
-    if (userId) {
-      const saved = typeof doc?.playMs === "number" ? doc.playMs : 0;
-      this.play.set(client.sessionId, new PlayClock(Math.max(saved, carry.playMs), !this.hidden.has(client.sessionId), now));
-      this.claims.set(client.sessionId, Math.max(typeof doc?.chestClaims === "number" ? doc.chestClaims : 0, carry.claims));
+    else {
+      // Gifted cars are always owned, even if a stale client save dropped one.
+      const progress = sanitizeProgress(doc) ?? {};
+      const gifted = sanitizeIds(doc.giftedCars);
+      if (gifted.length) progress.owned = sanitizeIds([...(progress.owned ?? []), ...gifted]);
+      client.send("progress", { ...progress, serverTime: now });
     }
+
+    // Signed-in accounts (also without a database: then the clocks live for this session) start
+    // their reward clocks from the saved counts.
+    if (userId) this.play.set(client.sessionId, new PlayRewards(doc, !this.hidden.has(client.sessionId), carry, now));
     this.sendPlaytime(client);
     void this.sendLeaderboard(client);
   }

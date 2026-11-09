@@ -12,9 +12,20 @@ export const PlayerState = schema(
     y: t.float64().default(0),
     z: t.float64().default(0),
     yaw: t.float32().default(0), // heading, rad (PI = facing north / the gate)
-    speed: t.float32().default(0), // m/s
+    speed: t.float32().default(0), // m/s along the nose, signed (the wheels' speed: a treadmill reports its belt speed)
+    steer: t.float32().default(0), // -1..1 steering input (front wheels + the driver's hands)
+    thr: t.float32().default(0), // -1..1 throttle (exhaust, brake lights)
+    flags: t.uint8().default(0), // pose flag bits: braking 1, drifting 2, handbrake 4, treadmill 8, boosted 16, stunned 32
+    emote: t.uint8().default(0), // the driver's last gesture: 1 cheer, 2 wave, 3 honk (counted by emoteN)
+    emoteN: t.uint16().default(0), // bumps with every emote so the same gesture can repeat
     car: t.string().default(""), // equipped car id (client CARS), "" = default
     level: t.uint32().default(1), // for the name plate
+    uid: t.string().default(""), // Bloxity user id of a signed-in player ("" = guest): matches portal chat messages to a car
+    // The driver's look (presence.ts `avatar`): JSON of SDK.avatar.getEquipped() / getProportions() and the
+    // composed skin texture URL, so the others can dress the same avatar in the seat.
+    avatar: t.string().default(""),
+    props: t.string().default(""),
+    skin: t.string().default(""),
   },
   "PlayerState",
 );

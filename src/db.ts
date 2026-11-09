@@ -24,7 +24,9 @@ export interface PlayerDoc {
   boostReadyAt?: number; // legacy: the old 5-min chest cooldown (clients no longer send it)
   playMs?: number; // server-counted play toward the next Free Boost chest (playtime.ts), never from the client
   chestClaims?: number; // Free Boost chests opened
-  autoDrive?: boolean;
+  carPlayMs?: number; // server-counted play toward the next free car (playtime.ts)
+  carGifts?: number; // free cars given
+  giftedCars?: string[]; // their ids (always merged back into `owned` on load)
   lastSeen?: number; // epoch ms of the last activity
   version: number;
   updatedAt: Date;

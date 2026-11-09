@@ -7,6 +7,10 @@ export const NAME_MAX = 64;
 export const PFP_MAX_LEN = 512;
 // Presence (presence.ts): pose bounds (|x|, |y|, |z| up to `xy` m; speed in m/s).
 export const POSE_BOUNDS = { xy: 5000, speed: 2000 };
+// Avatar presence (presence.ts `avatar`): longest relayed JSON, the hosts a skin texture may come from, emote kinds.
+export const AVATAR_JSON_MAX = 1500;
+export const SKIN_HOSTS = ["api.bloxity.io", "static.bloxity.io"];
+export const EMOTE_KINDS = 3;
 
 // Colyseus drops the whole connection for a WebSocket message above this (default 4 KB).
 export const MAX_PAYLOAD_BYTES = 128 * 1024;

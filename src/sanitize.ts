@@ -35,7 +35,6 @@ export function sanitizeProgress(raw: unknown): Partial<PlayerDoc> | null {
   if (finite(raw.xp)) out.xp = clampNum(raw.xp, XP_MAX);
   if (finite(raw.rebirths)) out.rebirths = clampInt(raw.rebirths, REBIRTHS_MAX);
   if (finite(raw.bestTape)) out.bestTape = clampInt(raw.bestTape, TAPES_MAX, -1);
-  if (typeof raw.autoDrive === "boolean") out.autoDrive = raw.autoDrive;
   const horizon = Date.now() + BOOST_FUTURE_MS;
   if (finite(raw.boostUntil)) out.boostUntil = clampInt(raw.boostUntil, horizon);
   if (finite(raw.boostReadyAt)) out.boostReadyAt = clampInt(raw.boostReadyAt, horizon);

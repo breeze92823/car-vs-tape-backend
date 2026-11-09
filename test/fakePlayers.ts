@@ -4,7 +4,7 @@ import type { PlayerDoc } from "../src/db.js";
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// Just what WorldRoom calls: findOne() and updateOne() (upsert, $set, $max, $setOnInsert), plus the
+// Just what WorldRoom calls: findOne() and updateOne() (upsert, $set, $max, $addToSet, $setOnInsert), plus the
 // leaderboard's find({ f: { $gt } }).sort({ f: -1 }).limit(n).toArray() and countDocuments({ f: { $gt } }).
 // Reads wait for release(), so a test registers its message handlers before the load answers.
 export function fakePlayers(seed: PlayerDoc[] = []) {
@@ -45,6 +45,7 @@ export function fakePlayers(seed: PlayerDoc[] = []) {
       if (!existing && !options?.upsert) return { modifiedCount: 0 };
       const next: any = { ...(existing ?? { _id: filter._id, ...(update.$setOnInsert ?? {}) }), ...(update.$set ?? {}) };
       for (const [k, v] of Object.entries(update.$max ?? {})) next[k] = Math.max(next[k] ?? -Infinity, v as number);
+      for (const [k, v] of Object.entries(update.$addToSet ?? {})) next[k] = [...new Set([...(next[k] ?? []), v])];
       docs.set(filter._id, next);
       return { modifiedCount: 1 };
     },

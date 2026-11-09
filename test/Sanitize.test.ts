@@ -7,13 +7,12 @@ describe("sanitizeProgress", () => {
   it("rejects non-objects and bounds numbers", () => {
     assert.strictEqual(sanitizeProgress(null), null);
     assert.strictEqual(sanitizeProgress([1]), null);
-    const out = sanitizeProgress({ power: 1e40, wins: -5, totalWins: NaN, rebirths: 3.7, level: 0, autoDrive: "yes", hack: "x" })!;
+    const out = sanitizeProgress({ power: 1e40, wins: -5, totalWins: NaN, rebirths: 3.7, level: 0, hack: "x" })!;
     assert.strictEqual(out.power, CURRENCY_MAX);
     assert.strictEqual(out.wins, 0);
     assert.strictEqual(out.totalWins, undefined);
     assert.strictEqual(out.rebirths, 3);
     assert.strictEqual(out.level, 1);
-    assert.strictEqual(out.autoDrive, undefined);
     assert.ok(!("hack" in out));
   });
 
